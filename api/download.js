@@ -1,5 +1,4 @@
-import { get } from '@vercel/blob'
-import { Readable } from 'node:stream'
+import { get, issueSignedToken, presignUrl } from '@vercel/blob'
 
 function blobToken() {
   const token = process.env.BLOB_READ_WRITE_TOKEN?.trim()
@@ -35,7 +34,6 @@ function getPath(project) {
   if (project.filePath) return project.filePath
   if (project.apkPath) return project.apkPath
 
-  // Backward compatibility with projects that only stored the old Blob URL.
   if (project.apkUrl) {
     try {
       const url = new URL(project.apkUrl)
@@ -46,23 +44,6 @@ function getPath(project) {
   }
 
   return null
-}
-
-function safeFilename(name) {
-  return String(name || 'download')
-    .split(/[/\\]/)
-    .pop()
-    .replace(/[^a-z0-9._-]/gi, '_') || 'download'
-}
-
-function extensionFor(project) {
-  const stored = String(project.fileName || '').split(/[/\\]/).pop()
-  if (stored && stored.includes('.')) return safeFilename(stored)
-
-  const base = safeFilename(project.name || 'download')
-  if (project.type === 'APK') return `${base}.apk`
-  if (project.type === 'EXE') return `${base}.exe`
-  return `${base}.zip`
 }
 
 export default async function handler(request, response) {
@@ -82,23 +63,27 @@ export default async function handler(request, response) {
     const pathname = getPath(project)
     if (!pathname) return response.status(404).json({ error: 'File not found for this project' })
 
-    const result = await get(pathname, {
-      access: 'private',
+    // Do not proxy the APK/EXE/extension through the Vercel Function.
+    // Instead create a short-lived, single-file private Blob GET URL and
+    // redirect the browser to it. This also avoids serverless stream issues.
+    const validUntil = Date.now() + 10 * 60 * 1000
+    const signedToken = await issueSignedToken({
       token,
-      useCache: false,
+      pathname,
+      operations: ['get'],
+      validUntil,
     })
 
-    if (!result?.stream) return response.status(404).json({ error: 'File not found in Blob storage' })
+    const { presignedUrl } = await presignUrl(signedToken, {
+      pathname,
+      operation: 'get',
+      access: 'private',
+      validUntil,
+    })
 
-    const filename = extensionFor(project)
-    response.statusCode = 200
-    response.setHeader('Content-Type', project.fileContentType || result.blob?.contentType || 'application/octet-stream')
-    response.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
-    response.setHeader('Cache-Control', 'private, no-store, max-age=0')
-
-    Readable.fromWeb(result.stream).pipe(response)
+    return response.redirect(302, presignedUrl)
   } catch (error) {
-    console.error('File download failed:', error)
-    return response.status(500).json({ error: error?.message || 'Could not download file' })
+    console.error('File download URL creation failed:', error)
+    return response.status(500).json({ error: error?.message || 'Could not create download URL' })
   }
 }
