@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream'
 import { get } from '@vercel/blob'
 
 function blobToken() {
@@ -54,8 +55,9 @@ function getFilename(project, pathname) {
 
 function contentDisposition(filename) {
   const safe = String(filename || 'download').replace(/[\r\n"]/g, '')
+  const fallback = safe.replace(/[^a-zA-Z0-9._-]/g, '_')
   const encoded = encodeURIComponent(safe)
-  return `attachment; filename="${safe.replace(/[^a-zA-Z0-9._-]/g, '_')}"; filename*=UTF-8''${encoded}`
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`
 }
 
 export default async function handler(request, response) {
@@ -75,8 +77,8 @@ export default async function handler(request, response) {
     const pathname = getPath(project)
     if (!pathname) return response.status(404).json({ error: 'File not found for this project' })
 
-    // Read the private object itself. There is deliberately no redirect,
-    // signed URL, or Blob URL exposed to the browser.
+    // Fetch the private object itself and stream it through this endpoint.
+    // The browser never receives a Blob URL and this endpoint never redirects.
     const result = await get(pathname, {
       access: 'private',
       token,
@@ -89,16 +91,14 @@ export default async function handler(request, response) {
 
     const blob = result.blob || {}
     const filename = getFilename(project, pathname)
-    const headers = {
-      'Content-Type': blob.contentType || project.fileContentType || 'application/octet-stream',
-      'Content-Disposition': contentDisposition(filename),
-      'Cache-Control': 'private, no-store, max-age=0',
-      'X-Content-Type-Options': 'nosniff',
-    }
+    response.setHeader('Content-Type', blob.contentType || project.fileContentType || 'application/octet-stream')
+    response.setHeader('Content-Disposition', contentDisposition(filename))
+    response.setHeader('Cache-Control', 'private, no-store, max-age=0')
+    response.setHeader('X-Content-Type-Options', 'nosniff')
+    if (blob.size != null) response.setHeader('Content-Length', String(blob.size))
 
-    if (blob.size != null) headers['Content-Length'] = String(blob.size)
-
-    return new Response(result.stream, { status: 200, headers })
+    Readable.fromWeb(result.stream).pipe(response)
+    return undefined
   } catch (error) {
     console.error('Private Blob download failed:', error)
     const message = String(error?.message || '')
