@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { upload } from '@vercel/blob/client'
 import { ArrowUpRight, Boxes, Check, Download, ExternalLink, Code2, Globe, Menu, Smartphone, Sparkles, UploadCloud, X, Trash2, LockKeyhole } from 'lucide-react'
 import './styles.css'
 
@@ -60,8 +59,38 @@ function AdminPanel({ projects, setProjects, adminKey, setAdminKey, message, set
     setBusy(true); setMessage('')
     try {
       let apkUrl = ''; let apkPath = ''
-      if (form.type === 'APK') { setMessage('Uploading APK directly from your browser…'); const blob = await upload(`apks/${Date.now()}-${file.name}`, file, { access: 'private', handleUploadUrl: '/api/upload', clientPayload: JSON.stringify({ adminKey: key }), multipart: true, onUploadProgress: (event) => setMessage(`Uploading APK… ${Math.round(event.percentage)}%`) }); apkPath = blob.pathname || '' }
-      const project = { id: `${Date.now()}-${form.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`, ...form, apkUrl: '', apkPath }; const response = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-key': key }, body: JSON.stringify({ projects: [project, ...projects] }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Could not save project')
+      if (form.type === 'APK') {
+        setMessage('Preparing secure APK upload…')
+        const tokenResponse = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ adminKey: key, filename: file.name, contentType: file.type || 'application/vnd.android.package-archive', size: file.size }),
+        })
+        const tokenData = await tokenResponse.json().catch(() => ({}))
+        if (!tokenResponse.ok) throw new Error(tokenData.error || `Could not prepare upload (${tokenResponse.status})`)
+
+        setMessage(`Uploading APK… 0%`)
+        const uploadResponse = await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest()
+          xhr.open('PUT', tokenData.presignedUrl)
+          xhr.setRequestHeader('Content-Type', file.type || 'application/vnd.android.package-archive')
+          xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable) setMessage(`Uploading APK… ${Math.round((event.loaded / event.total) * 100)}%`)
+          }
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.responseText)
+            else reject(new Error(`APK upload failed (${xhr.status})`))
+          }
+          xhr.onerror = () => reject(new Error('APK upload request failed.'))
+          xhr.onabort = () => reject(new Error('APK upload was cancelled.'))
+          xhr.send(file)
+        })
+
+        let uploaded = {}
+        try { uploaded = JSON.parse(uploadResponse || '{}') } catch {}
+        apkPath = uploaded.pathname || tokenData.pathname || ''
+      }
+      const project = { id: `${Date.now()}-${form.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`, ...form, apkUrl, apkPath }; const response = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-key': key }, body: JSON.stringify({ projects: [project, ...projects] }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Could not save project')
       setProjects([project, ...projects]); setForm({ name: '', type: 'Live', description: '', version: '', url: '', github: '', featured: false }); setFile(null); if (fileRef.current) fileRef.current.value = ''; setMessage('Project added successfully.')
     } catch (error) { setMessage(error.message || 'Something went wrong.') } finally { setBusy(false) }
   }
