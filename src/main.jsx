@@ -5,7 +5,7 @@ import {
   Boxes,
   Download,
   ExternalLink,
-  Github,
+  Code2,
   Globe,
   Menu,
   Smartphone,
@@ -44,13 +44,11 @@ function App() {
   const [filter, setFilter] = useState('All')
   const [mobileOpen, setMobileOpen] = useState(false)
 
-  const visible = useMemo(() => {
-    return projects.filter((project) => {
-      const matchesFilter = filter === 'All' || (filter === 'Apps' ? project.type === 'APK' : project.type === 'Live')
-      const haystack = `${project.name} ${project.description}`.toLowerCase()
-      return matchesFilter && haystack.includes(query.toLowerCase())
-    })
-  }, [filter, query])
+  const visible = useMemo(() => projects.filter((project) => {
+    const matchesFilter = filter === 'All' || (filter === 'Apps' ? project.type === 'APK' : project.type === 'Live')
+    const haystack = `${project.name} ${project.description}`.toLowerCase()
+    return matchesFilter && haystack.includes(query.toLowerCase())
+  }), [filter, query])
 
   return (
     <div className="site-shell">
@@ -86,25 +84,16 @@ function App() {
 
         <section className="project-section" id="projects">
           <div className="section-head">
-            <div>
-              <p className="section-kicker">Selected work</p>
-              <h2>Projects</h2>
-            </div>
+            <div><p className="section-kicker">Selected work</p><h2>Projects</h2></div>
             <div className="project-count">{projects.length.toString().padStart(2, '0')} builds</div>
           </div>
-
           <div className="toolbar">
             <div className="filter-group">
-              {['All', 'Live', 'Apps'].map((item) => (
-                <button key={item} className={filter === item ? 'filter active' : 'filter'} onClick={() => setFilter(item)}>{item}</button>
-              ))}
+              {['All', 'Live', 'Apps'].map((item) => <button key={item} className={filter === item ? 'filter active' : 'filter'} onClick={() => setFilter(item)}>{item}</button>)}
             </div>
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search projects" aria-label="Search projects" />
           </div>
-
-          <div className="project-grid">
-            {visible.map((project) => <ProjectCard key={project.id} project={project} />)}
-          </div>
+          <div className="project-grid">{visible.map((project) => <ProjectCard key={project.id} project={project} />)}</div>
           {visible.length === 0 && <div className="empty-state">No projects match that search.</div>}
         </section>
 
@@ -113,12 +102,9 @@ function App() {
             <div>
               <p className="section-kicker">A living showcase</p>
               <h2>Built to be updated.</h2>
-              <p>Add a project by editing one entry in the project list: name, short description, then either a deployed URL or an APK download URL. The site stays intentionally simple so the projects stay the focus.</p>
+              <p>Project entries support either a deployed website or an Android APK. APK files should live in persistent storage rather than inside the browser deployment itself.</p>
             </div>
-            <div className="about-code">
-              <span>project</span>
-              <strong>{'{ url | apk }'}</strong>
-            </div>
+            <div className="about-code"><span>project</span><strong>{'{ url | apk }'}</strong></div>
           </div>
         </section>
       </main>
@@ -151,10 +137,8 @@ function ProjectCard({ project }) {
           <a className="card-primary" href={actionUrl} target={isApk ? undefined : '_blank'} rel={isApk ? undefined : 'noreferrer'} download={isApk ? true : undefined}>
             {isApk ? <><Download size={16} /> Download APK</> : <><ExternalLink size={16} /> Open project</>}
           </a>
-        ) : (
-          <span className="card-primary disabled">Add {isApk ? 'APK URL' : 'live URL'}<ArrowUpRight size={16} /></span>
-        )}
-        {project.github && <a className="github-link" href={project.github} target="_blank" rel="noreferrer" aria-label={`${project.name} source code`}><Github size={18} /></a>}
+        ) : <span className="card-primary disabled">Add {isApk ? 'APK URL' : 'live URL'}<ArrowUpRight size={16} /></span>}
+        {project.github && <a className="github-link" href={project.github} target="_blank" rel="noreferrer" aria-label={`${project.name} source code`}><Code2 size={18} /></a>}
       </div>
     </article>
   )
