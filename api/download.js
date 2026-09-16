@@ -31,20 +31,29 @@ function getProjectId(request) {
   }
 }
 
-function getPath(project) {
-  if (project.filePath) return project.filePath
-  if (project.apkPath) return project.apkPath
+function addPath(paths, value) {
+  if (!value) return
+  const path = String(value).trim()
+  if (!path) return
+  if (!paths.includes(path)) paths.push(path)
+}
 
-  if (project.apkUrl) {
+function getPathCandidates(project) {
+  const paths = []
+  addPath(paths, project.filePath)
+  addPath(paths, project.apkPath)
+
+  for (const value of [project.apkUrl, project.fileUrl, project.downloadUrl]) {
+    if (!value) continue
     try {
-      const url = new URL(project.apkUrl)
-      return decodeURIComponent(url.pathname.replace(/^\//, ''))
+      const url = new URL(String(value))
+      addPath(paths, decodeURIComponent(url.pathname.replace(/^\//, '')))
     } catch {
-      return null
+      addPath(paths, value)
     }
   }
 
-  return null
+  return paths
 }
 
 function getFilename(project, pathname) {
@@ -58,6 +67,58 @@ function contentDisposition(filename) {
   const fallback = safe.replace(/[^a-zA-Z0-9._-]/g, '_')
   const encoded = encodeURIComponent(safe)
   return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`
+}
+
+async function getBlob(token, candidates) {
+  let lastError = null
+
+  for (const pathname of candidates) {
+    try {
+      const result = await get(pathname, {
+        access: 'private',
+        token,
+        useCache: false,
+      })
+
+      if (result?.stream && result.statusCode !== 404) {
+        return { result, pathname }
+      }
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  // Extra fallback for deployments where the SDK read path has a transient
+  // issue. Vercel documents direct authenticated access to private Blob URLs.
+  const storeId = process.env.BLOB_STORE_ID?.trim()
+  if (storeId) {
+    for (const pathname of candidates) {
+      try {
+        const encodedPath = pathname.split('/').map(encodeURIComponent).join('/')
+        const blobResponse = await fetch(`https://${storeId}.private.blob.vercel-storage.com/${encodedPath}?cache=0`, {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: 'no-store',
+        })
+
+        if (blobResponse.ok && blobResponse.body) {
+          return {
+            result: {
+              stream: blobResponse.body,
+              blob: {
+                size: blobResponse.headers.get('content-length') ? Number(blobResponse.headers.get('content-length')) : undefined,
+                contentType: blobResponse.headers.get('content-type') || undefined,
+              },
+            },
+            pathname,
+          }
+        }
+      } catch (error) {
+        lastError = error
+      }
+    }
+  }
+
+  return { result: null, pathname: candidates[0] || null, lastError }
 }
 
 export default async function handler(request, response) {
@@ -74,19 +135,18 @@ export default async function handler(request, response) {
     const project = projects.find((item) => String(item.id) === id)
     if (!project) return response.status(404).json({ error: 'Project not found' })
 
-    const pathname = getPath(project)
-    if (!pathname) return response.status(404).json({ error: 'File not found for this project' })
+    const candidates = getPathCandidates(project)
+    if (!candidates.length) return response.status(404).json({ error: 'File not found for this project' })
 
-    // Fetch the private object itself and stream it through this endpoint.
-    // The browser never receives a Blob URL and this endpoint never redirects.
-    const result = await get(pathname, {
-      access: 'private',
-      token,
-      useCache: false,
-    })
+    // Stream the private object through this endpoint. The browser never gets
+    // a Blob URL and the endpoint never redirects.
+    const { result, pathname } = await getBlob(token, candidates)
 
     if (!result?.stream) {
-      return response.status(404).json({ error: 'The uploaded file does not exist in Blob storage. Re-upload this project file.' })
+      return response.status(404).json({
+        error: 'The uploaded file is not present in the configured Vercel Blob store.',
+        pathsChecked: candidates,
+      })
     }
 
     const blob = result.blob || {}
@@ -95,16 +155,14 @@ export default async function handler(request, response) {
     response.setHeader('Content-Disposition', contentDisposition(filename))
     response.setHeader('Cache-Control', 'private, no-store, max-age=0')
     response.setHeader('X-Content-Type-Options', 'nosniff')
-    if (blob.size != null) response.setHeader('Content-Length', String(blob.size))
+    if (blob.size != null && Number.isFinite(Number(blob.size))) {
+      response.setHeader('Content-Length', String(blob.size))
+    }
 
     Readable.fromWeb(result.stream).pipe(response)
     return undefined
   } catch (error) {
     console.error('Private Blob download failed:', error)
-    const message = String(error?.message || '')
-    if (/does not exist|not found|404/i.test(message)) {
-      return response.status(404).json({ error: 'The uploaded file does not exist in the configured Vercel Blob store. Re-upload this project file.' })
-    }
-    return response.status(500).json({ error: message || 'Could not download file' })
+    return response.status(500).json({ error: String(error?.message || 'Could not download file') })
   }
 }
