@@ -34,32 +34,42 @@ function parseRequestBody(request) {
   throw new Error('Request body is missing.')
 }
 
-function privateBlobUrl(pathname) {
-  const storeId = (process.env.BLOB_STORE_ID || '').trim()
-  if (!storeId) throw new Error('BLOB_STORE_ID is not available in this deployment.')
-  return `https://${storeId}.private.blob.vercel-storage.com/${pathname.split('/').map(encodeURIComponent).join('/')}`
-}
-
 async function verifyBlob(pathname, expectedSize, expectedContentType) {
   const token = blobToken()
-  const url = privateBlobUrl(pathname)
+  const validUntil = Date.now() + 5 * 60 * 1000
 
-  // Use the documented authenticated private-object endpoint instead of the
-  // Blob SDK HEAD helper. A one-byte range proves that the exact object exists
-  // without downloading the entire APK through the Vercel Function.
+  // Verify through the exact same authenticated Blob store/token used to
+  // create the upload URL. Do not construct a store URL from BLOB_STORE_ID:
+  // the signed URL already contains the correct store and pathname.
+  const signedToken = await issueSignedToken({
+    token,
+    pathname,
+    operations: ['get'],
+    validUntil,
+  })
+
+  const { presignedUrl } = await presignUrl(signedToken, {
+    pathname,
+    operation: 'get',
+    access: 'private',
+    validUntil,
+    useCache: false,
+  })
+
   let lastStatus = 0
   let lastError = ''
+
   for (let attempt = 0; attempt < 6; attempt += 1) {
     try {
-      const result = await fetch(url, {
+      const result = await fetch(presignedUrl, {
         method: 'GET',
         headers: {
-          Authorization: `Bearer ${token}`,
           Range: 'bytes=0-0',
           'Cache-Control': 'no-cache',
         },
         cache: 'no-store',
       })
+
       lastStatus = result.status
 
       if (result.ok || result.status === 206) {
@@ -73,7 +83,6 @@ async function verifyBlob(pathname, expectedSize, expectedContentType) {
           throw new Error(`Upload verification failed: expected ${expectedSize} bytes, found ${storedSize} bytes. The project was not saved.`)
         }
 
-        // Consume the tiny range so the request is cleanly completed.
         await result.arrayBuffer()
 
         return {
@@ -91,7 +100,7 @@ async function verifyBlob(pathname, expectedSize, expectedContentType) {
     if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 1000))
   }
 
-  throw new Error(`Upload finished, but the private Blob could not be verified (GET ${lastStatus}). ${lastError || 'The object was not found in the configured Blob store.'}`)
+  throw new Error(`Upload finished, but the private Blob could not be verified (GET ${lastStatus}). ${lastError || 'The uploaded object could not be read from the same Blob store.'}`)
 }
 
 export default async function handler(request, response) {
@@ -130,8 +139,22 @@ export default async function handler(request, response) {
 
     const pathname = `files/${Date.now()}-${filename}`
     const validUntil = Date.now() + 15 * 60 * 1000
-    const signedToken = await issueSignedToken({ token: blobToken(), pathname, operations: ['put'], validUntil, allowedContentTypes: [contentType], maximumSizeInBytes: size })
-    const { presignedUrl } = await presignUrl(signedToken, { pathname, operation: 'put', access: 'private', validUntil, allowedContentTypes: [contentType], maximumSizeInBytes: size })
+    const signedToken = await issueSignedToken({
+      token: blobToken(),
+      pathname,
+      operations: ['put'],
+      validUntil,
+      allowedContentTypes: [contentType],
+      maximumSizeInBytes: size,
+    })
+    const { presignedUrl } = await presignUrl(signedToken, {
+      pathname,
+      operation: 'put',
+      access: 'private',
+      validUntil,
+      allowedContentTypes: [contentType],
+      maximumSizeInBytes: size,
+    })
 
     return response.status(200).json({ pathname, presignedUrl, validUntil })
   } catch (error) {
