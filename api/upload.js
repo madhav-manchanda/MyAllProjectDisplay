@@ -1,4 +1,22 @@
-import { handleUpload } from '@vercel/blob/client'
+import { issueSignedToken, presignUrl } from '@vercel/blob'
+
+const APK_TYPES = new Set([
+  'application/vnd.android.package-archive',
+  'application/octet-stream',
+  '',
+])
+
+function safeFilename(name) {
+  const base = String(name || 'app.apk').split(/[/\\]/).pop() || 'app.apk'
+  const cleaned = base.replace(/[^a-zA-Z0-9._-]/g, '-')
+  return cleaned.toLowerCase().endsWith('.apk') ? cleaned : `${cleaned}.apk`
+}
+
+function blobToken() {
+  const token = process.env.BLOB_READ_WRITE_TOKEN?.trim()
+  if (!token) throw new Error('BLOB_READ_WRITE_TOKEN is not available in this deployment.')
+  return token
+}
 
 export default async function handler(request, response) {
   if (request.method !== 'POST') {
@@ -7,49 +25,50 @@ export default async function handler(request, response) {
 
   try {
     const body = await request.json()
-    const token = process.env.BLOB_READ_WRITE_TOKEN?.trim()
+    const configuredKey = (process.env.ADMIN_UPLOAD_KEY || '').trim()
+    const suppliedKey = String(body.adminKey || '').trim()
 
-    if (!token) {
-      throw new Error('BLOB_READ_WRITE_TOKEN is missing from this Vercel deployment.')
+    if (!configuredKey || !suppliedKey || configuredKey !== suppliedKey) {
+      return response.status(401).json({ error: 'Unauthorized' })
     }
 
-    const jsonResponse = await handleUpload({
-      body,
-      request,
-      token,
-      onBeforeGenerateToken: async (_pathname, clientPayload) => {
-        let payload = {}
-        try {
-          payload = JSON.parse(clientPayload || '{}')
-        } catch {
-          throw new Error('Invalid upload payload')
-        }
+    const filename = safeFilename(body.filename)
+    const contentType = String(body.contentType || 'application/vnd.android.package-archive')
+    const size = Number(body.size || 0)
 
-        const configured = (process.env.ADMIN_UPLOAD_KEY || '').trim()
-        const supplied = (payload.adminKey || '').trim()
+    if (!filename.toLowerCase().endsWith('.apk')) {
+      return response.status(400).json({ error: 'Only .apk files are allowed.' })
+    }
 
-        if (!configured || !supplied || configured !== supplied) {
-          throw new Error('Unauthorized')
-        }
+    if (!APK_TYPES.has(contentType)) {
+      return response.status(400).json({ error: 'Invalid APK content type.' })
+    }
 
-        return {
-          allowedContentTypes: [
-            'application/vnd.android.package-archive',
-            'application/octet-stream',
-          ],
-          addRandomSuffix: true,
-          access: 'private',
-          maximumSizeInBytes: 1024 * 1024 * 1024,
-        }
-      },
-      onUploadCompleted: async () => {},
+    if (!Number.isFinite(size) || size <= 0 || size > 1024 * 1024 * 1024) {
+      return response.status(400).json({ error: 'APK must be between 1 byte and 1 GB.' })
+    }
+
+    const pathname = `apks/${Date.now()}-${filename}`
+    const validUntil = Date.now() + 15 * 60 * 1000
+    const token = await issueSignedToken({
+      token: blobToken(),
+      pathname,
+      operations: ['put'],
+      validUntil,
+      allowedContentTypes: [contentType],
+      maximumSizeInBytes: size,
     })
 
-    return response.status(200).json(jsonResponse)
+    const { presignedUrl } = await presignUrl(token, {
+      pathname,
+      operation: 'put',
+      access: 'private',
+      validUntil,
+    })
+
+    return response.status(200).json({ pathname, presignedUrl, validUntil })
   } catch (error) {
-    console.error('Blob client-token error:', error)
-    return response.status(400).json({
-      error: error?.message || 'Failed to generate upload token',
-    })
+    console.error('Blob signed upload URL error:', error)
+    return response.status(500).json({ error: error?.message || 'Could not create upload URL' })
   }
 }
