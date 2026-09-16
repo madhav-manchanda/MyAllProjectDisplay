@@ -1,5 +1,4 @@
-import { get } from '@vercel/blob'
-import { Readable } from 'node:stream'
+import { head, issueSignedToken, presignUrl, get } from '@vercel/blob'
 
 function blobToken() {
   const token = process.env.BLOB_READ_WRITE_TOKEN?.trim()
@@ -53,12 +52,6 @@ function getFilename(project, pathname) {
   return pathname.split('/').pop() || 'download'
 }
 
-function contentDisposition(filename) {
-  const fallback = filename.replace(/[^a-zA-Z0-9._-]/g, '-') || 'download'
-  const encoded = encodeURIComponent(filename).replace(/['()]/g, escape)
-  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`
-}
-
 export default async function handler(request, response) {
   if (request.method !== 'GET') {
     return response.status(405).json({ error: 'Method not allowed' })
@@ -76,32 +69,36 @@ export default async function handler(request, response) {
     const pathname = getPath(project)
     if (!pathname) return response.status(404).json({ error: 'File not found for this project' })
 
-    // Fetch the private Blob inside this API route and stream it directly to
-    // the browser. There is deliberately no redirect to a Blob URL.
-    const blob = await get(pathname, {
-      access: 'private',
-      token,
-      useCache: false,
-    })
-
-    if (!blob?.stream) {
+    // Verify the object exists before giving the browser a download URL.
+    // There is intentionally no HTTP redirect from this endpoint.
+    const blob = await head(pathname, { token })
+    if (!blob) {
       return response.status(404).json({ error: 'The uploaded file is missing from Blob storage. Re-upload this project file.' })
     }
 
-    const filename = getFilename(project, pathname)
-    response.setHeader('Content-Type', blob.contentType || project.fileContentType || 'application/octet-stream')
-    if (blob.size != null) response.setHeader('Content-Length', String(blob.size))
-    response.setHeader('Content-Disposition', contentDisposition(filename))
-    response.setHeader('Cache-Control', 'private, no-store, max-age=0')
-    response.setHeader('X-Content-Type-Options', 'nosniff')
+    const validUntil = Date.now() + 10 * 60 * 1000
+    const signedToken = await issueSignedToken({
+      token,
+      pathname,
+      operations: ['get'],
+      validUntil,
+    })
 
-    Readable.fromWeb(blob.stream).on('error', (error) => {
-      console.error('Blob download stream error:', error)
-      if (!response.headersSent) response.status(500).json({ error: 'Download stream failed' })
-      else response.destroy(error)
-    }).pipe(response)
+    const { presignedUrl } = await presignUrl(signedToken, {
+      pathname,
+      operation: 'get',
+      access: 'private',
+      validUntil,
+    })
+
+    return response.status(200).json({
+      downloadUrl: presignedUrl,
+      filename: getFilename(project, pathname),
+      contentType: blob.contentType || project.fileContentType || 'application/octet-stream',
+      size: blob.size,
+    })
   } catch (error) {
-    console.error('File download failed:', error)
-    return response.status(500).json({ error: error?.message || 'Could not download file' })
+    console.error('File download URL creation failed:', error)
+    return response.status(500).json({ error: error?.message || 'Could not create download URL' })
   }
 }
