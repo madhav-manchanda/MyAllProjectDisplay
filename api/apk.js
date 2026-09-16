@@ -1,4 +1,5 @@
 import { get } from '@vercel/blob'
+import { Readable } from 'node:stream'
 
 async function readProjects() {
   const result = await get('data/projects.json', {
@@ -50,15 +51,11 @@ export default async function handler(request, response) {
 
     if (!result?.stream) return response.status(404).json({ error: 'APK not found' })
 
+    const filename = `${project.name.replace(/[^a-z0-9._-]/gi, '_')}.apk`
+    response.statusCode = 200
     response.setHeader('Content-Type', result.blob?.contentType || 'application/vnd.android.package-archive')
-    response.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(project.name)}.apk"`)
-    return new Response(result.stream, {
-      status: 200,
-      headers: {
-        'Content-Type': result.blob?.contentType || 'application/vnd.android.package-archive',
-        'Content-Disposition': `attachment; filename="${project.name.replace(/[^a-z0-9._-]/gi, '_')}.apk"`,
-      },
-    })
+    response.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    Readable.fromWeb(result.stream).pipe(response)
   } catch (error) {
     console.error('APK download failed:', error)
     return response.status(500).json({ error: error?.message || 'Could not download APK' })
