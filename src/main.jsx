@@ -68,7 +68,7 @@ function ProjectCard({ project }) {
   const actionUrl = isFile ? ((project.filePath || project.apkPath || project.apkUrl) ? `/api/download?id=${encodeURIComponent(project.id)}` : '') : project.url
   const icon = project.type === 'APK' ? <Smartphone size={25} /> : project.type === 'Live' ? <Globe size={25} /> : <FileArchive size={25} />
   const actionLabel = isFile ? `Download ${project.type === 'APK' ? 'APK' : project.type === 'EXE' ? 'EXE' : 'extension'}` : 'Open project'
-  return <article className={project.featured ? 'project-card featured' : 'project-card'}><div className="card-topline"><span className={isFile ? 'type-badge apk' : 'type-badge live'}>{project.type === 'APK' ? <Smartphone size={13} /> : project.type === 'Live' ? <Globe size={13} /> : <FileArchive size={13} />}{typeLabel(project.type)}</span>{project.featured && <span className="featured-label">Featured</span>}</div><div className="card-icon">{icon}</div><h3>{project.name}</h3><p>{project.description}</p><div className="card-meta">{project.version}</div><div className="card-actions">{actionUrl ? <a className="card-primary" href={actionUrl} target={isFile ? undefined : '_blank'} rel={isFile ? undefined : 'noreferrer'} download={isFile ? true : undefined}>{isFile ? <><Download size={16} /> {actionLabel}</> : <><ExternalLink size={16} /> {actionLabel}</>}</a> : <span className="card-primary disabled">Add {isFile ? 'file' : 'live URL'}<ArrowUpRight size={16} /></span>}{project.github && <a className="github-link" href={project.github} target="_blank" rel="noreferrer" aria-label={`${project.name} source code`}><Code2 size={18} /></a>}</div></article>
+  return <article className={project.featured ? 'project-card featured' : 'project-card'}><div className="card-topline"><span className={isFile ? 'type-badge apk' : 'type-badge live'}>{project.type === 'APK' ? <Smartphone size={13} /> : project.type === 'Live' ? <Globe size={13} /> : <FileArchive size={13} />}{typeLabel(project.type)}</span>{project.featured && <span className="featured-label">Featured</span>}</div><div className="card-icon">{icon}</div><h3>{project.name}</h3><p>{project.description}</p><div className="card-meta">{project.version}</div><div className="card-actions">{actionUrl ? <a className="card-primary" href={actionUrl} target={isFile ? undefined : '_blank'} rel={isFile ? undefined : 'noreferrer'} download={isFile ? true : undefined}>{isFile ? <><Download size={16} /> {actionLabel}</> : <><ExternalLink size={16} /> {actionLabel}</>}</a> : <span className="card-primary disabled">Add {isFile ? 'file' : 'live URL'}<ArrowUpRight size={16} /></span>}{project.github && <a className="github-link" href={project.github} target="_blank" rel="noreferrer" aria-label={`${project.name} source code`}><Code2 size={18} /></a>}</div></div></article>
 }
 
 function AdminPanel({ projects, setProjects, adminKey, setAdminKey, message, setMessage, onClose }) {
@@ -92,11 +92,12 @@ function AdminPanel({ projects, setProjects, adminKey, setAdminKey, message, set
       let filePath = ''; let fileName = ''; let fileContentType = ''
       if (isUploadType) {
         const label = form.type === 'APK' ? 'APK' : form.type === 'EXE' ? 'EXE' : 'extension'
+        const uploadContentType = file.type || 'application/octet-stream'
         setMessage(`Preparing secure ${label} upload…`)
         const tokenResponse = await fetch('/api/upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ adminKey: key, filename: file.name, contentType: file.type || 'application/octet-stream', size: file.size }),
+          body: JSON.stringify({ adminKey: key, filename: file.name, contentType: uploadContentType, size: file.size }),
         })
         const tokenData = await tokenResponse.json().catch(() => ({}))
         if (!tokenResponse.ok) throw new Error(tokenData.error || `Could not prepare upload (${tokenResponse.status})`)
@@ -105,16 +106,30 @@ function AdminPanel({ projects, setProjects, adminKey, setAdminKey, message, set
         await new Promise((resolve, reject) => {
           const xhr = new XMLHttpRequest()
           xhr.open('PUT', tokenData.presignedUrl)
-          xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream')
+          xhr.setRequestHeader('Content-Type', uploadContentType)
           xhr.upload.onprogress = (event) => { if (event.lengthComputable) setMessage(`Uploading ${label}… ${Math.round((event.loaded / event.total) * 100)}%`) }
           xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`${label} upload failed (${xhr.status})`))
           xhr.onerror = () => reject(new Error(`${label} upload request failed.`))
           xhr.onabort = () => reject(new Error(`${label} upload was cancelled.`))
           xhr.send(file)
         })
+
         filePath = tokenData.pathname || ''
         fileName = file.name
-        fileContentType = file.type || 'application/octet-stream'
+        fileContentType = uploadContentType
+
+        // A successful PUT response alone is not enough to publish the project.
+        // Verify that the exact private Blob exists and has the expected size/type.
+        setMessage(`Verifying ${label} upload…`)
+        const verifyResponse = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'verify', adminKey: key, pathname: filePath, size: file.size, contentType: fileContentType }),
+        })
+        const verifyData = await verifyResponse.json().catch(() => ({}))
+        if (!verifyResponse.ok || !verifyData.verified) {
+          throw new Error(verifyData.error || 'Upload finished, but Blob verification failed. The project was not saved.')
+        }
       }
 
       const project = { id: `${Date.now()}-${form.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`, ...form, apkUrl: '', apkPath: form.type === 'APK' ? filePath : '', filePath, fileName, fileContentType }
