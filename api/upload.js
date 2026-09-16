@@ -18,13 +18,41 @@ function blobToken() {
   return token
 }
 
+function parseRequestBody(request) {
+  // Vercel's classic Node.js function signature exposes parsed JSON as request.body.
+  // Do not call request.json() here because that method only exists on the Web Request API.
+  const body = request?.body
+
+  if (body && typeof body === 'object' && !Buffer.isBuffer(body)) {
+    return body
+  }
+
+  if (typeof body === 'string') {
+    try {
+      return JSON.parse(body)
+    } catch {
+      throw new Error('Invalid JSON request body.')
+    }
+  }
+
+  if (Buffer.isBuffer(body)) {
+    try {
+      return JSON.parse(body.toString('utf8'))
+    } catch {
+      throw new Error('Invalid JSON request body.')
+    }
+  }
+
+  throw new Error('Request body is missing.')
+}
+
 export default async function handler(request, response) {
   if (request.method !== 'POST') {
     return response.status(405).json({ error: 'Method not allowed' })
   }
 
   try {
-    const body = await request.json()
+    const body = parseRequestBody(request)
     const configuredKey = (process.env.ADMIN_UPLOAD_KEY || '').trim()
     const suppliedKey = String(body.adminKey || '').trim()
 
@@ -50,7 +78,8 @@ export default async function handler(request, response) {
 
     const pathname = `apks/${Date.now()}-${filename}`
     const validUntil = Date.now() + 15 * 60 * 1000
-    const token = await issueSignedToken({
+
+    const signedToken = await issueSignedToken({
       token: blobToken(),
       pathname,
       operations: ['put'],
@@ -59,11 +88,13 @@ export default async function handler(request, response) {
       maximumSizeInBytes: size,
     })
 
-    const { presignedUrl } = await presignUrl(token, {
+    const { presignedUrl } = await presignUrl(signedToken, {
       pathname,
       operation: 'put',
       access: 'private',
       validUntil,
+      allowedContentTypes: [contentType],
+      maximumSizeInBytes: size,
     })
 
     return response.status(200).json({ pathname, presignedUrl, validUntil })
