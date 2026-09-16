@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@vercel/blob": "^2.4.0",
+    "@vercel/blob": "^2.6.1",
     "@vitejs/plugin-react": "latest",
     "vite": "latest",
     "typescript": "latest",
