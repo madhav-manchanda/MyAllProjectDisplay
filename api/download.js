@@ -53,9 +53,9 @@ function getFilename(project, pathname) {
 }
 
 function contentDisposition(filename) {
-  const safe = filename.replace(/[\r\n"]/g, '_')
-  const encoded = encodeURIComponent(filename).replace(/['()]/g, escape)
-  return `attachment; filename="${safe}"; filename*=UTF-8''${encoded}`
+  const safe = String(filename || 'download').replace(/[\r\n"]/g, '')
+  const encoded = encodeURIComponent(safe)
+  return `attachment; filename="${safe.replace(/[^a-zA-Z0-9._-]/g, '_')}"; filename*=UTF-8''${encoded}`
 }
 
 export default async function handler(request, response) {
@@ -75,43 +75,36 @@ export default async function handler(request, response) {
     const pathname = getPath(project)
     if (!pathname) return response.status(404).json({ error: 'File not found for this project' })
 
-    // Fetch the private Blob on the server and stream it straight to the
-    // browser. There is deliberately NO redirect and NO Blob URL exposed.
-    const blob = await get(pathname, {
+    // Read the private object itself. There is deliberately no redirect,
+    // signed URL, or Blob URL exposed to the browser.
+    const result = await get(pathname, {
       access: 'private',
       token,
       useCache: false,
     })
 
-    if (!blob?.stream) {
-      return response.status(404).json({ error: 'The uploaded file is missing from Blob storage. Re-upload this project file.' })
+    if (!result?.stream) {
+      return response.status(404).json({ error: 'The uploaded file does not exist in Blob storage. Re-upload this project file.' })
     }
 
+    const blob = result.blob || {}
     const filename = getFilename(project, pathname)
-    response.setHeader('Content-Type', blob.contentType || project.fileContentType || 'application/octet-stream')
-    response.setHeader('Content-Length', String(blob.size))
-    response.setHeader('Content-Disposition', contentDisposition(filename))
-    response.setHeader('Cache-Control', 'private, no-store, max-age=0')
-
-    // @vercel/blob returns a Web ReadableStream. Vercel's Node response can
-    // consume it through a reader without buffering the whole APK in memory.
-    const reader = blob.stream.getReader()
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        response.write(Buffer.from(value))
-      }
-    } finally {
-      reader.releaseLock()
+    const headers = {
+      'Content-Type': blob.contentType || project.fileContentType || 'application/octet-stream',
+      'Content-Disposition': contentDisposition(filename),
+      'Cache-Control': 'private, no-store, max-age=0',
+      'X-Content-Type-Options': 'nosniff',
     }
 
-    return response.end()
+    if (blob.size != null) headers['Content-Length'] = String(blob.size)
+
+    return new Response(result.stream, { status: 200, headers })
   } catch (error) {
-    console.error('File download failed:', error)
-    if (!response.headersSent) {
-      return response.status(500).json({ error: error?.message || 'Could not download file' })
+    console.error('Private Blob download failed:', error)
+    const message = String(error?.message || '')
+    if (/does not exist|not found|404/i.test(message)) {
+      return response.status(404).json({ error: 'The uploaded file does not exist in the configured Vercel Blob store. Re-upload this project file.' })
     }
-    return response.end()
+    return response.status(500).json({ error: message || 'Could not download file' })
   }
 }
