@@ -1,4 +1,4 @@
-import { head, issueSignedToken, presignUrl, get } from '@vercel/blob'
+import { get } from '@vercel/blob'
 
 function blobToken() {
   const token = process.env.BLOB_READ_WRITE_TOKEN?.trim()
@@ -52,6 +52,12 @@ function getFilename(project, pathname) {
   return pathname.split('/').pop() || 'download'
 }
 
+function contentDisposition(filename) {
+  const safe = filename.replace(/[\r\n"]/g, '_')
+  const encoded = encodeURIComponent(filename).replace(/['()]/g, escape)
+  return `attachment; filename="${safe}"; filename*=UTF-8''${encoded}`
+}
+
 export default async function handler(request, response) {
   if (request.method !== 'GET') {
     return response.status(405).json({ error: 'Method not allowed' })
@@ -69,36 +75,43 @@ export default async function handler(request, response) {
     const pathname = getPath(project)
     if (!pathname) return response.status(404).json({ error: 'File not found for this project' })
 
-    // Verify the object exists before giving the browser a download URL.
-    // There is intentionally no HTTP redirect from this endpoint.
-    const blob = await head(pathname, { token })
-    if (!blob) {
+    // Fetch the private Blob on the server and stream it straight to the
+    // browser. There is deliberately NO redirect and NO Blob URL exposed.
+    const blob = await get(pathname, {
+      access: 'private',
+      token,
+      useCache: false,
+    })
+
+    if (!blob?.stream) {
       return response.status(404).json({ error: 'The uploaded file is missing from Blob storage. Re-upload this project file.' })
     }
 
-    const validUntil = Date.now() + 10 * 60 * 1000
-    const signedToken = await issueSignedToken({
-      token,
-      pathname,
-      operations: ['get'],
-      validUntil,
-    })
+    const filename = getFilename(project, pathname)
+    response.setHeader('Content-Type', blob.contentType || project.fileContentType || 'application/octet-stream')
+    response.setHeader('Content-Length', String(blob.size))
+    response.setHeader('Content-Disposition', contentDisposition(filename))
+    response.setHeader('Cache-Control', 'private, no-store, max-age=0')
 
-    const { presignedUrl } = await presignUrl(signedToken, {
-      pathname,
-      operation: 'get',
-      access: 'private',
-      validUntil,
-    })
+    // @vercel/blob returns a Web ReadableStream. Vercel's Node response can
+    // consume it through a reader without buffering the whole APK in memory.
+    const reader = blob.stream.getReader()
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        response.write(Buffer.from(value))
+      }
+    } finally {
+      reader.releaseLock()
+    }
 
-    return response.status(200).json({
-      downloadUrl: presignedUrl,
-      filename: getFilename(project, pathname),
-      contentType: blob.contentType || project.fileContentType || 'application/octet-stream',
-      size: blob.size,
-    })
+    return response.end()
   } catch (error) {
-    console.error('File download URL creation failed:', error)
-    return response.status(500).json({ error: error?.message || 'Could not create download URL' })
+    console.error('File download failed:', error)
+    if (!response.headersSent) {
+      return response.status(500).json({ error: error?.message || 'Could not download file' })
+    }
+    return response.end()
   }
 }
