@@ -1,4 +1,4 @@
-import { head, issueSignedToken, presignUrl } from '@vercel/blob'
+import { issueSignedToken, presignUrl } from '@vercel/blob'
 
 const FILE_RULES = {
   APK: { extensions: ['.apk'], contentTypes: ['application/vnd.android.package-archive', 'application/octet-stream', ''] },
@@ -36,26 +36,48 @@ function parseRequestBody(request) {
 
 async function verifyBlob(pathname, expectedSize, expectedContentType) {
   const token = blobToken()
-  let blob = null
+  const validUntil = Date.now() + 5 * 60 * 1000
 
-  // Give the storage layer a few short retries in case the PUT has just completed.
+  // Verify through a freshly signed private HEAD request. This checks the same
+  // private Blob object that the browser just uploaded, without downloading the APK.
+  const signedToken = await issueSignedToken({
+    token,
+    pathname,
+    operations: ['head'],
+    validUntil,
+  })
+
+  const { presignedUrl } = await presignUrl(signedToken, {
+    pathname,
+    operation: 'head',
+    access: 'private',
+    validUntil,
+    useCache: false,
+  })
+
+  let lastStatus = 0
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    blob = await head(pathname, { token })
-    if (blob) break
+    const result = await fetch(presignedUrl, { method: 'HEAD', cache: 'no-store' })
+    lastStatus = result.status
+    if (result.ok) {
+      const size = Number(result.headers.get('content-length') || 0)
+      const contentType = result.headers.get('content-type') || expectedContentType
+
+      if (size && size !== Number(expectedSize)) {
+        throw new Error(`Upload verification failed: expected ${expectedSize} bytes, found ${size} bytes. The project was not saved.`)
+      }
+
+      return {
+        pathname,
+        size: size || Number(expectedSize),
+        contentType,
+      }
+    }
+
     if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 500))
   }
 
-  if (!blob) throw new Error('Upload finished, but the file could not be found in Blob storage. The project was not saved.')
-
-  if (Number(blob.size) !== Number(expectedSize)) {
-    throw new Error(`Upload verification failed: expected ${expectedSize} bytes, found ${blob.size} bytes. The project was not saved.`)
-  }
-
-  if (expectedContentType && blob.contentType && blob.contentType !== expectedContentType) {
-    throw new Error(`Upload verification failed: expected ${expectedContentType}, found ${blob.contentType}. The project was not saved.`)
-  }
-
-  return blob
+  throw new Error(`Upload finished, but the private Blob could not be verified (HEAD ${lastStatus}). The project was not saved.`)
 }
 
 export default async function handler(request, response) {
