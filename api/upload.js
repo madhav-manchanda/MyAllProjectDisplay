@@ -1,9 +1,9 @@
 import { handleUpload } from '@vercel/blob/client'
 
 export default async function handler(request, response) {
-  const body = await request.json()
-
   try {
+    const body = await request.json()
+
     const jsonResponse = await handleUpload({
       body,
       request,
@@ -11,12 +11,15 @@ export default async function handler(request, response) {
         let payload = {}
         try { payload = JSON.parse(clientPayload || '{}') } catch {}
 
-        if (!process.env.ADMIN_UPLOAD_KEY || payload.adminKey !== process.env.ADMIN_UPLOAD_KEY) {
+        const configured = (process.env.ADMIN_UPLOAD_KEY || '').trim()
+        const supplied = (payload.adminKey || '').trim()
+        if (!configured || !supplied || configured !== supplied) {
           throw new Error('Unauthorized')
         }
 
         return {
           allowedContentTypes: ['application/vnd.android.package-archive', 'application/octet-stream'],
+          access: 'private',
           addRandomSuffix: true,
           maximumSizeInBytes: 1024 * 1024 * 1024,
         }
