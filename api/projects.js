@@ -8,6 +8,7 @@ const defaults = [
     description: 'A private Android messenger built with Kotlin, Supabase and realtime communication.',
     version: 'Android app',
     apkUrl: '',
+    apkPath: '',
     url: '',
     github: 'https://github.com/madhav-manchanda/veya',
     featured: true,
@@ -19,6 +20,7 @@ const defaults = [
     description: 'A logistics matching platform connecting shipment demand with available transport capacity.',
     version: 'Web app',
     apkUrl: '',
+    apkPath: '',
     url: '',
     github: '',
     featured: true,
@@ -26,10 +28,16 @@ const defaults = [
 ]
 
 async function readProjects() {
-  const result = await get('data/projects.json', { access: 'public' })
-  if (!result || result.statusCode !== 200 || !result.stream) return defaults
+  const result = await get('data/projects.json', {
+    access: 'private',
+    useCache: false,
+  })
+
+  if (!result || !result.stream) return defaults
+
   const text = await new Response(result.stream).text()
-  return JSON.parse(text)
+  const projects = JSON.parse(text)
+  return Array.isArray(projects) ? projects : defaults
 }
 
 function authorized(request) {
@@ -40,43 +48,65 @@ function authorized(request) {
 
 async function writeProjects(projects) {
   return put('data/projects.json', JSON.stringify(projects), {
-    access: 'public',
+    access: 'private',
     addRandomSuffix: false,
     allowOverwrite: true,
     contentType: 'application/json',
-    cacheControlMaxAge: 60,
   })
+}
+
+function getProjectId(request) {
+  if (request.query?.id) return request.query.id
+  try {
+    return new URL(request.url, 'https://vercel.local').searchParams.get('id')
+  } catch {
+    return null
+  }
 }
 
 export default async function handler(request, response) {
   if (request.method === 'GET') {
     try {
       return response.status(200).json(await readProjects())
-    } catch {
+    } catch (error) {
+      console.error('Could not read projects:', error)
       return response.status(200).json(defaults)
     }
   }
 
-  if (!['POST', 'DELETE'].includes(request.method)) return response.status(405).json({ error: 'Method not allowed' })
-  if (!authorized(request)) return response.status(401).json({ error: 'Invalid admin key' })
+  if (!['POST', 'DELETE'].includes(request.method)) {
+    return response.status(405).json({ error: 'Method not allowed' })
+  }
+
+  if (!authorized(request)) {
+    return response.status(401).json({ error: 'Invalid admin key' })
+  }
 
   try {
     const projects = await readProjects()
 
     if (request.method === 'DELETE') {
-      const id = request.query?.id
+      const id = getProjectId(request)
       if (!id) return response.status(400).json({ error: 'Project id is required' })
+
       const next = projects.filter((project) => project.id !== id)
-      if (next.length === projects.length) return response.status(404).json({ error: 'Project not found' })
+      if (next.length === projects.length) {
+        return response.status(404).json({ error: 'Project not found' })
+      }
+
       await writeProjects(next)
       return response.status(200).json({ ok: true, projects: next })
     }
 
     const incoming = request.body?.projects
-    if (!Array.isArray(incoming)) return response.status(400).json({ error: 'projects must be an array' })
-    const blob = await writeProjects(incoming)
-    return response.status(200).json({ ok: true, url: blob.url })
+    if (!Array.isArray(incoming)) {
+      return response.status(400).json({ error: 'projects must be an array' })
+    }
+
+    await writeProjects(incoming)
+    return response.status(200).json({ ok: true })
   } catch (error) {
+    console.error('Could not save projects:', error)
     return response.status(500).json({ error: error?.message || 'Could not save projects' })
   }
 }
