@@ -1,4 +1,4 @@
-import { issueSignedToken, presignUrl } from '@vercel/blob'
+import { head, issueSignedToken, presignUrl } from '@vercel/blob'
 
 const FILE_RULES = {
   APK: { extensions: ['.apk'], contentTypes: ['application/vnd.android.package-archive', 'application/octet-stream', ''] },
@@ -34,6 +34,30 @@ function parseRequestBody(request) {
   throw new Error('Request body is missing.')
 }
 
+async function verifyBlob(pathname, expectedSize, expectedContentType) {
+  const token = blobToken()
+  let blob = null
+
+  // Give the storage layer a few short retries in case the PUT has just completed.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    blob = await head(pathname, { token })
+    if (blob) break
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+
+  if (!blob) throw new Error('Upload finished, but the file could not be found in Blob storage. The project was not saved.')
+
+  if (Number(blob.size) !== Number(expectedSize)) {
+    throw new Error(`Upload verification failed: expected ${expectedSize} bytes, found ${blob.size} bytes. The project was not saved.`)
+  }
+
+  if (expectedContentType && blob.contentType && blob.contentType !== expectedContentType) {
+    throw new Error(`Upload verification failed: expected ${expectedContentType}, found ${blob.contentType}. The project was not saved.`)
+  }
+
+  return blob
+}
+
 export default async function handler(request, response) {
   if (request.method !== 'POST') return response.status(405).json({ error: 'Method not allowed' })
 
@@ -42,6 +66,22 @@ export default async function handler(request, response) {
     const configuredKey = (process.env.ADMIN_UPLOAD_KEY || '').trim()
     const suppliedKey = String(body.adminKey || '').trim()
     if (!configuredKey || !suppliedKey || configuredKey !== suppliedKey) return response.status(401).json({ error: 'Unauthorized' })
+
+    if (body.action === 'verify') {
+      const pathname = String(body.pathname || '').trim()
+      const size = Number(body.size || 0)
+      const contentType = String(body.contentType || 'application/octet-stream')
+      if (!pathname || !pathname.startsWith('files/')) return response.status(400).json({ error: 'Invalid file path.' })
+      if (!Number.isFinite(size) || size <= 0) return response.status(400).json({ error: 'Invalid file size.' })
+
+      const blob = await verifyBlob(pathname, size, contentType)
+      return response.status(200).json({
+        verified: true,
+        pathname: blob.pathname,
+        size: blob.size,
+        contentType: blob.contentType || contentType,
+      })
+    }
 
     const filename = safeFilename(body.filename)
     const contentType = String(body.contentType || 'application/octet-stream')
@@ -59,7 +99,7 @@ export default async function handler(request, response) {
 
     return response.status(200).json({ pathname, presignedUrl, validUntil })
   } catch (error) {
-    console.error('Blob signed upload URL error:', error)
-    return response.status(500).json({ error: error?.message || 'Could not create upload URL' })
+    console.error('Blob upload error:', error)
+    return response.status(500).json({ error: error?.message || 'Could not process upload' })
   }
 }
