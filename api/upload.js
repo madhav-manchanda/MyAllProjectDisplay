@@ -34,50 +34,64 @@ function parseRequestBody(request) {
   throw new Error('Request body is missing.')
 }
 
+function privateBlobUrl(pathname) {
+  const storeId = (process.env.BLOB_STORE_ID || '').trim()
+  if (!storeId) throw new Error('BLOB_STORE_ID is not available in this deployment.')
+  return `https://${storeId}.private.blob.vercel-storage.com/${pathname.split('/').map(encodeURIComponent).join('/')}`
+}
+
 async function verifyBlob(pathname, expectedSize, expectedContentType) {
   const token = blobToken()
-  const validUntil = Date.now() + 5 * 60 * 1000
+  const url = privateBlobUrl(pathname)
 
-  // Verify through a freshly signed private HEAD request. This checks the same
-  // private Blob object that the browser just uploaded, without downloading the APK.
-  const signedToken = await issueSignedToken({
-    token,
-    pathname,
-    operations: ['head'],
-    validUntil,
-  })
-
-  const { presignedUrl } = await presignUrl(signedToken, {
-    pathname,
-    operation: 'head',
-    access: 'private',
-    validUntil,
-    useCache: false,
-  })
-
+  // Use the documented authenticated private-object endpoint instead of the
+  // Blob SDK HEAD helper. A one-byte range proves that the exact object exists
+  // without downloading the entire APK through the Vercel Function.
   let lastStatus = 0
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const result = await fetch(presignedUrl, { method: 'HEAD', cache: 'no-store' })
-    lastStatus = result.status
-    if (result.ok) {
-      const size = Number(result.headers.get('content-length') || 0)
-      const contentType = result.headers.get('content-type') || expectedContentType
+  let lastError = ''
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      const result = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Range: 'bytes=0-0',
+          'Cache-Control': 'no-cache',
+        },
+        cache: 'no-store',
+      })
+      lastStatus = result.status
 
-      if (size && size !== Number(expectedSize)) {
-        throw new Error(`Upload verification failed: expected ${expectedSize} bytes, found ${size} bytes. The project was not saved.`)
+      if (result.ok || result.status === 206) {
+        const contentRange = result.headers.get('content-range') || ''
+        const contentLength = Number(result.headers.get('content-length') || 0)
+        const rangeMatch = contentRange.match(/bytes\s+0-0\/(\d+)/i)
+        const storedSize = rangeMatch ? Number(rangeMatch[1]) : Number(expectedSize)
+        const contentType = result.headers.get('content-type') || expectedContentType
+
+        if (storedSize !== Number(expectedSize)) {
+          throw new Error(`Upload verification failed: expected ${expectedSize} bytes, found ${storedSize} bytes. The project was not saved.`)
+        }
+
+        // Consume the tiny range so the request is cleanly completed.
+        await result.arrayBuffer()
+
+        return {
+          pathname,
+          size: storedSize || contentLength || Number(expectedSize),
+          contentType,
+        }
       }
 
-      return {
-        pathname,
-        size: size || Number(expectedSize),
-        contentType,
-      }
+      lastError = await result.text().catch(() => '')
+    } catch (error) {
+      lastError = error?.message || String(error)
     }
 
-    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 500))
+    if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 1000))
   }
 
-  throw new Error(`Upload finished, but the private Blob could not be verified (HEAD ${lastStatus}). The project was not saved.`)
+  throw new Error(`Upload finished, but the private Blob could not be verified (GET ${lastStatus}). ${lastError || 'The object was not found in the configured Blob store.'}`)
 }
 
 export default async function handler(request, response) {
