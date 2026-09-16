@@ -5,8 +5,8 @@ import { ArrowUpRight, Boxes, Check, Download, ExternalLink, Code2, Globe, Menu,
 import './styles.css'
 
 const fallbackProjects = [
-  { id: 'veya', name: 'Veya', type: 'APK', description: 'A private Android messenger built with Kotlin, Supabase and realtime communication.', version: 'Android app', apkUrl: '', url: '', github: 'https://github.com/madhav-manchanda/veya', featured: true },
-  { id: 'logixchange', name: 'LogixChange', type: 'Live', description: 'A logistics matching platform connecting shipment demand with available transport capacity.', version: 'Web app', apkUrl: '', url: '', github: '', featured: true },
+  { id: 'veya', name: 'Veya', type: 'APK', description: 'A private Android messenger built with Kotlin, Supabase and realtime communication.', version: 'Android app', apkUrl: '', apkPath: '', url: '', github: 'https://github.com/madhav-manchanda/veya', featured: true },
+  { id: 'logixchange', name: 'LogixChange', type: 'Live', description: 'A logistics matching platform connecting shipment demand with available transport capacity.', version: 'Web app', apkUrl: '', apkPath: '', url: '', github: '', featured: true },
 ]
 
 function App() {
@@ -37,7 +37,7 @@ function App() {
       <main id="top">
         <section className="hero"><div className="hero-copy"><div className="eyebrow"><span className="pulse-dot" /> Project lab</div><h1>Things I've built,<br /><span>ready to try.</span></h1><p>One place for my deployed web projects and Android apps. Open a live build or download an APK and explore.</p><a className="primary-button" href="#projects">Explore projects <ArrowUpRight size={17} /></a></div><div className="hero-orbit" aria-hidden="true"><div className="orbit orbit-one"><div className="orbit-node node-one"><Globe size={18} /></div></div><div className="orbit orbit-two"><div className="orbit-node node-two"><Smartphone size={18} /></div></div><div className="orbit-core"><Boxes size={28} /></div></div></section>
         <section className="project-section" id="projects"><div className="section-head"><div><p className="section-kicker">Selected work</p><h2>Projects</h2></div><div className="project-count">{projects.length.toString().padStart(2, '0')} builds</div></div><div className="toolbar"><div className="filter-group">{['All', 'Live', 'Apps'].map((item) => <button key={item} className={filter === item ? 'filter active' : 'filter'} onClick={() => setFilter(item)}>{item}</button>)}</div><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search projects" aria-label="Search projects" /></div><div className="project-grid">{visible.map((project) => <ProjectCard key={project.id} project={project} />)}</div>{visible.length === 0 && <div className="empty-state">No projects match that search.</div>}</section>
-        <section className="about" id="about"><div className="about-card"><div><p className="section-kicker">A living showcase</p><h2>Built to be updated.</h2><p>Add live projects by URL or upload Android APKs from the Manage panel. APK files are stored separately from the React deployment and served directly to visitors.</p></div><div className="about-code"><span>project</span><strong>{'{ url | apk }'}</strong></div></div></section>
+        <section className="about" id="about"><div className="about-card"><div><p className="section-kicker">A living showcase</p><h2>Built to be updated.</h2><p>Add live projects by URL or upload Android APKs from the Manage panel. APK files are kept in private Blob storage and delivered through a controlled download endpoint.</p></div><div className="about-code"><span>project</span><strong>{'{ url | apk }'}</strong></div></div></section>
       </main>
       <footer><span>© {new Date().getFullYear()} Madhav Manchanda</span><a href="https://github.com/madhav-manchanda" target="_blank" rel="noreferrer">GitHub <ExternalLink size={14} /></a></footer>
       {adminOpen && <AdminPanel projects={projects} setProjects={setProjects} adminKey={adminKey} setAdminKey={saveKey} message={message} setMessage={setMessage} onClose={() => { setAdminOpen(false); setMessage('') }} />}
@@ -46,7 +46,8 @@ function App() {
 }
 
 function ProjectCard({ project }) {
-  const isApk = project.type === 'APK'; const actionUrl = isApk ? project.apkUrl : project.url
+  const isApk = project.type === 'APK'
+  const actionUrl = isApk ? (project.apkPath || project.apkUrl ? `/api/apk?id=${encodeURIComponent(project.id)}` : '') : project.url
   return <article className={project.featured ? 'project-card featured' : 'project-card'}><div className="card-topline"><span className={isApk ? 'type-badge apk' : 'type-badge live'}>{isApk ? <Smartphone size={13} /> : <Globe size={13} />}{isApk ? 'Android APK' : 'Live website'}</span>{project.featured && <span className="featured-label">Featured</span>}</div><div className="card-icon">{isApk ? <Smartphone size={25} /> : <Globe size={25} />}</div><h3>{project.name}</h3><p>{project.description}</p><div className="card-meta">{project.version}</div><div className="card-actions">{actionUrl ? <a className="card-primary" href={actionUrl} target={isApk ? undefined : '_blank'} rel={isApk ? undefined : 'noreferrer'} download={isApk ? true : undefined}>{isApk ? <><Download size={16} /> Download APK</> : <><ExternalLink size={16} /> Open project</>}</a> : <span className="card-primary disabled">Add {isApk ? 'APK' : 'live URL'}<ArrowUpRight size={16} /></span>}{project.github && <a className="github-link" href={project.github} target="_blank" rel="noreferrer" aria-label={`${project.name} source code`}><Code2 size={18} /></a>}</div></article>
 }
 
@@ -58,9 +59,9 @@ function AdminPanel({ projects, setProjects, adminKey, setAdminKey, message, set
     event.preventDefault(); const key = adminKey.trim(); if (!key) return setMessage('Enter your admin key first.'); if (!form.name.trim() || !form.description.trim()) return setMessage('Name and description are required.'); if (form.type === 'Live' && !form.url.trim()) return setMessage('Add the deployed website URL.'); if (form.type === 'APK' && !file) return setMessage('Choose an APK file to upload.')
     setBusy(true); setMessage('')
     try {
-      let apkUrl = ''
-      if (form.type === 'APK') { setMessage('Uploading APK directly from your browser…'); const blob = await upload(`apks/${file.name}`, file, { access: 'public', handleUploadUrl: '/api/upload', clientPayload: JSON.stringify({ adminKey: key }), multipart: true, onUploadProgress: (event) => setMessage(`Uploading APK… ${Math.round(event.percentage)}%`) }); apkUrl = blob.downloadUrl || blob.url }
-      const project = { id: `${Date.now()}-${form.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`, ...form, apkUrl }; const response = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-key': key }, body: JSON.stringify({ projects: [project, ...projects] }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Could not save project')
+      let apkUrl = ''; let apkPath = ''
+      if (form.type === 'APK') { setMessage('Uploading APK directly from your browser…'); const blob = await upload(`apks/${file.name}`, file, { access: 'private', handleUploadUrl: '/api/upload', clientPayload: JSON.stringify({ adminKey: key }), multipart: true, onUploadProgress: (event) => setMessage(`Uploading APK… ${Math.round(event.percentage)}%`) }); apkPath = blob.pathname || '' }
+      const project = { id: `${Date.now()}-${form.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`, ...form, apkUrl: '', apkPath }; const response = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-key': key }, body: JSON.stringify({ projects: [project, ...projects] }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Could not save project')
       setProjects([project, ...projects]); setForm({ name: '', type: 'Live', description: '', version: '', url: '', github: '', featured: false }); setFile(null); if (fileRef.current) fileRef.current.value = ''; setMessage('Project added successfully.')
     } catch (error) { setMessage(error.message || 'Something went wrong.') } finally { setBusy(false) }
   }
