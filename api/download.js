@@ -37,10 +37,12 @@ export default async function handler(request, response) {
     if (!project) return response.status(404).json({ error: 'Project not found' })
     const pathname = getPath(project)
     if (!pathname || !pathname.startsWith('files/')) return response.status(404).json({ error: 'File not found for this project' })
+
     const result = await get(pathname, { access: 'public', token: blobToken(), useCache: false })
-    if (!result?.url) return response.status(404).json({ error: 'Blob file not found' })
+    if (!result?.blob?.url) return response.status(404).json({ error: 'Blob file not found' })
+
     response.statusCode = 302
-    response.setHeader('Location', result.url)
+    response.setHeader('Location', result.blob.downloadUrl || `${result.blob.url}?download=1`)
     response.setHeader('Cache-Control', 'no-store')
     return response.end()
   } catch (error) {
