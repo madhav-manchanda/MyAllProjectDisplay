@@ -34,73 +34,11 @@ function parseRequestBody(request) {
   throw new Error('Request body is missing.')
 }
 
-async function verifyBlob(pathname, expectedSize, expectedContentType) {
-  const token = blobToken()
-  const validUntil = Date.now() + 5 * 60 * 1000
-
-  // Verify through the exact same authenticated Blob store/token used to
-  // create the upload URL. Do not construct a store URL from BLOB_STORE_ID:
-  // the signed URL already contains the correct store and pathname.
-  const signedToken = await issueSignedToken({
-    token,
-    pathname,
-    operations: ['get'],
-    validUntil,
-  })
-
-  const { presignedUrl } = await presignUrl(signedToken, {
-    pathname,
-    operation: 'get',
-    access: 'private',
-    validUntil,
-    useCache: false,
-  })
-
-  let lastStatus = 0
-  let lastError = ''
-
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    try {
-      const result = await fetch(presignedUrl, {
-        method: 'GET',
-        headers: {
-          Range: 'bytes=0-0',
-          'Cache-Control': 'no-cache',
-        },
-        cache: 'no-store',
-      })
-
-      lastStatus = result.status
-
-      if (result.ok || result.status === 206) {
-        const contentRange = result.headers.get('content-range') || ''
-        const contentLength = Number(result.headers.get('content-length') || 0)
-        const rangeMatch = contentRange.match(/bytes\s+0-0\/(\d+)/i)
-        const storedSize = rangeMatch ? Number(rangeMatch[1]) : Number(expectedSize)
-        const contentType = result.headers.get('content-type') || expectedContentType
-
-        if (storedSize !== Number(expectedSize)) {
-          throw new Error(`Upload verification failed: expected ${expectedSize} bytes, found ${storedSize} bytes. The project was not saved.`)
-        }
-
-        await result.arrayBuffer()
-
-        return {
-          pathname,
-          size: storedSize || contentLength || Number(expectedSize),
-          contentType,
-        }
-      }
-
-      lastError = await result.text().catch(() => '')
-    } catch (error) {
-      lastError = error?.message || String(error)
-    }
-
-    if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 1000))
-  }
-
-  throw new Error(`Upload finished, but the private Blob could not be verified (GET ${lastStatus}). ${lastError || 'The uploaded object could not be read from the same Blob store.'}`)
+function publicUrlFromPresignedUrl(presignedUrl) {
+  const url = new URL(presignedUrl)
+  url.hostname = url.hostname.replace('.private.blob.vercel-storage.com', '.public.blob.vercel-storage.com')
+  url.search = ''
+  return url.toString()
 }
 
 export default async function handler(request, response) {
@@ -111,22 +49,6 @@ export default async function handler(request, response) {
     const configuredKey = (process.env.ADMIN_UPLOAD_KEY || '').trim()
     const suppliedKey = String(body.adminKey || '').trim()
     if (!configuredKey || !suppliedKey || configuredKey !== suppliedKey) return response.status(401).json({ error: 'Unauthorized' })
-
-    if (body.action === 'verify') {
-      const pathname = String(body.pathname || '').trim()
-      const size = Number(body.size || 0)
-      const contentType = String(body.contentType || 'application/octet-stream')
-      if (!pathname || !pathname.startsWith('files/')) return response.status(400).json({ error: 'Invalid file path.' })
-      if (!Number.isFinite(size) || size <= 0) return response.status(400).json({ error: 'Invalid file size.' })
-
-      const blob = await verifyBlob(pathname, size, contentType)
-      return response.status(200).json({
-        verified: true,
-        pathname: blob.pathname,
-        size: blob.size,
-        contentType: blob.contentType || contentType,
-      })
-    }
 
     const filename = safeFilename(body.filename)
     const contentType = String(body.contentType || 'application/octet-stream')
@@ -150,13 +72,18 @@ export default async function handler(request, response) {
     const { presignedUrl } = await presignUrl(signedToken, {
       pathname,
       operation: 'put',
-      access: 'private',
+      access: 'public',
       validUntil,
       allowedContentTypes: [contentType],
       maximumSizeInBytes: size,
     })
 
-    return response.status(200).json({ pathname, presignedUrl, validUntil })
+    return response.status(200).json({
+      pathname,
+      presignedUrl,
+      publicUrl: publicUrlFromPresignedUrl(presignedUrl),
+      validUntil,
+    })
   } catch (error) {
     console.error('Blob upload error:', error)
     return response.status(500).json({ error: error?.message || 'Could not process upload' })
