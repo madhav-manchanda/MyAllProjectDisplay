@@ -41,6 +41,13 @@ function publicUrlFromPresignedUrl(presignedUrl) {
   return url.toString()
 }
 
+async function makePublicUrl(pathname) {
+  const validUntil = Date.now() + 5 * 60 * 1000
+  const signedToken = await issueSignedToken({ token: blobToken(), pathname, operations: ['get'], validUntil })
+  const { presignedUrl } = await presignUrl(signedToken, { pathname, operation: 'get', access: 'public', validUntil, useCache: false })
+  return publicUrlFromPresignedUrl(presignedUrl)
+}
+
 export default async function handler(request, response) {
   if (request.method !== 'POST') return response.status(405).json({ error: 'Method not allowed' })
 
@@ -49,6 +56,17 @@ export default async function handler(request, response) {
     const configuredKey = (process.env.ADMIN_UPLOAD_KEY || '').trim()
     const suppliedKey = String(body.adminKey || '').trim()
     if (!configuredKey || !suppliedKey || configuredKey !== suppliedKey) return response.status(401).json({ error: 'Unauthorized' })
+
+    if (body.action === 'verify') {
+      const pathname = String(body.pathname || '').trim()
+      const size = Number(body.size || 0)
+      const contentType = String(body.contentType || 'application/octet-stream')
+      if (!pathname || !pathname.startsWith('files/')) return response.status(400).json({ error: 'Invalid file path.' })
+      if (!Number.isFinite(size) || size <= 0) return response.status(400).json({ error: 'Invalid file size.' })
+
+      const publicUrl = await makePublicUrl(pathname)
+      return response.status(200).json({ verified: true, pathname, size, contentType, publicUrl })
+    }
 
     const filename = safeFilename(body.filename)
     const contentType = String(body.contentType || 'application/octet-stream')
@@ -78,12 +96,7 @@ export default async function handler(request, response) {
       maximumSizeInBytes: size,
     })
 
-    return response.status(200).json({
-      pathname,
-      presignedUrl,
-      publicUrl: publicUrlFromPresignedUrl(presignedUrl),
-      validUntil,
-    })
+    return response.status(200).json({ pathname, presignedUrl, validUntil })
   } catch (error) {
     console.error('Blob upload error:', error)
     return response.status(500).json({ error: error?.message || 'Could not process upload' })
