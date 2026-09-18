@@ -9,8 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@vercel/blob": "^2.8.0",
     "@vitejs/plugin-react": "latest",
+    "@supabase/supabase-js": "latest",
     "vite": "latest",
     "typescript": "latest",
     "react": "latest",
