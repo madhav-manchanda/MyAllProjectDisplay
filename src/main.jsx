@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import * as tus from 'tus-js-client'
 import { ArrowUpRight, Boxes, Check, Download, ExternalLink, Code2, Globe, Menu, Smartphone, Sparkles, UploadCloud, X, Trash2, LockKeyhole, FileArchive, File } from 'lucide-react'
 import './styles.css'
 
@@ -121,38 +120,45 @@ function AdminPanel({ projects, setProjects, adminKey, setAdminKey, message, set
         const tokenData = await tokenResponse.json().catch(() => ({}))
         if (!tokenResponse.ok) throw new Error(tokenData.error || `Could not prepare upload (${tokenResponse.status})`)
 
-        const projectRef = new URL(supabaseUrl).hostname.split('.')[0]
-        const tusEndpoint = `https://${projectRef}.storage.supabase.co/storage/v1/upload/resumable`
+        const projectRef = new URL(su        if (!tokenData.signedUrl || !tokenData.token || !tokenData.pathname) {
+          throw new Error('Supabase did not return a usable signed upload URL.')
+        }
 
         setMessage(`Uploading ${fileDescription(form.type)}… 0%`)
         await new Promise((resolve, reject) => {
-          const upload = new tus.Upload(file, {
-            endpoint: tusEndpoint,
-            retryDelays: [0, 3000, 5000, 10000, 20000],
-            headers: {
-              'x-signature': tokenData.token,
-            },
-            uploadDataDuringCreation: true,
-            removeFingerprintOnSuccess: true,
-            chunkSize: 6 * 1024 * 1024,
-            metadata: {
-              bucketName: SUPABASE_BUCKET,
-              objectName: tokenData.pathname,
-              contentType: uploadContentType,
-              cacheControl: '3600',
-            },
-            onError: (error) => reject(error),
-            onProgress: (bytesUploaded, bytesTotal) => {
-              const percent = Math.round((bytesUploaded / bytesTotal) * 100)
-              setMessage(`Uploading ${fileDescription(form.type)}… ${percent}%`)
-            },
-            onSuccess: () => resolve(),
-          })
+          const xhr = new XMLHttpRequest()
+          xhr.open('PUT', tokenData.signedUrl, true)
+          xhr.setRequestHeader('Content-Type', uploadContentType)
+          xhr.setRequestHeader('Cache-Control', 'max-age=3600')
 
-          upload.start()
+          xhr.upload.onprogress = (event) => {
+            if (!event.lengthComputable) return
+            const percent = Math.round((event.loaded / event.total) * 100)
+            setMessage(`Uploading ${fileDescription(form.type)}… ${percent}%`)
+          }
+
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              resolve()
+              return
+            }
+
+            let details = ''
+            try {
+              const body = JSON.parse(xhr.responseText)
+              details = body.message || body.error || ''
+            } catch {
+              details = xhr.responseText || ''
+            }
+
+            reject(new Error(details || `Supabase upload failed (${xhr.status}).`))
+          }
+
+          xhr.onerror = () => reject(new Error('Network error while uploading the file to Supabase Storage.'))
+          xhr.onabort = () => reject(new Error('Upload was cancelled.'))
+          xhr.send(file)
         })
-
-        filePath = tokenData.pathname || ''
+e || ''
         fileName = file.name
         fileContentType = uploadContentType
         fileSize = file.size
