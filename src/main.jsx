@@ -120,7 +120,7 @@ function AdminPanel({ projects, setProjects, adminKey, setAdminKey, message, set
         const tokenData = await tokenResponse.json().catch(() => ({}))
         if (!tokenResponse.ok) throw new Error(tokenData.error || `Could not prepare upload (${tokenResponse.status})`)
 
-        const projectRef = new URL(su        if (!tokenData.signedUrl || !tokenData.token || !tokenData.pathname) {
+        if (!tokenData.signedUrl || !tokenData.token || !tokenData.pathname) {
           throw new Error('Supabase did not return a usable signed upload URL.')
         }
 
