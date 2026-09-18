@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { createClient } from '@supabase/supabase-js'
+import * as tus from 'tus-js-client'
 import { ArrowUpRight, Boxes, Check, Download, ExternalLink, Code2, Globe, Menu, Smartphone, Sparkles, UploadCloud, X, Trash2, LockKeyhole, FileArchive, File } from 'lucide-react'
 import './styles.css'
 
@@ -110,10 +110,7 @@ function AdminPanel({ projects, setProjects, adminKey, setAdminKey, message, set
       if (isUploadType) {
         const uploadContentType = file.type || 'application/octet-stream'
         const supabaseUrl = String(import.meta.env.VITE_SUPABASE_URL || '').trim()
-        const supabaseAnonKey = String(import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim()
-        if (!supabaseUrl || !supabaseAnonKey) {
-          throw new Error('VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are required for browser uploads.')
-        }
+        if (!supabaseUrl) throw new Error('VITE_SUPABASE_URL is required for browser uploads.')
 
         setMessage(`Preparing secure ${fileDescription(form.type)} upload…`)
         const tokenResponse = await fetch('/api/upload', {
@@ -124,15 +121,36 @@ function AdminPanel({ projects, setProjects, adminKey, setAdminKey, message, set
         const tokenData = await tokenResponse.json().catch(() => ({}))
         if (!tokenResponse.ok) throw new Error(tokenData.error || `Could not prepare upload (${tokenResponse.status})`)
 
-        const supabase = createClient(supabaseUrl, supabaseAnonKey)
-        setMessage(`Uploading ${fileDescription(form.type)}…`)
-        const { error: uploadError } = await supabase.storage
-          .from(SUPABASE_BUCKET)
-          .uploadToSignedUrl(tokenData.pathname, tokenData.token, file, {
-            contentType: uploadContentType,
-            cacheControl: '3600',
+        const projectRef = new URL(supabaseUrl).hostname.split('.')[0]
+        const tusEndpoint = `https://${projectRef}.storage.supabase.co/storage/v1/upload/resumable`
+
+        setMessage(`Uploading ${fileDescription(form.type)}… 0%`)
+        await new Promise((resolve, reject) => {
+          const upload = new tus.Upload(file, {
+            endpoint: tusEndpoint,
+            retryDelays: [0, 3000, 5000, 10000, 20000],
+            headers: {
+              'x-signature': tokenData.token,
+            },
+            uploadDataDuringCreation: true,
+            removeFingerprintOnSuccess: true,
+            chunkSize: 6 * 1024 * 1024,
+            metadata: {
+              bucketName: SUPABASE_BUCKET,
+              objectName: tokenData.pathname,
+              contentType: uploadContentType,
+              cacheControl: '3600',
+            },
+            onError: (error) => reject(error),
+            onProgress: (bytesUploaded, bytesTotal) => {
+              const percent = Math.round((bytesUploaded / bytesTotal) * 100)
+              setMessage(`Uploading ${fileDescription(form.type)}… ${percent}%`)
+            },
+            onSuccess: () => resolve(),
           })
-        if (uploadError) throw new Error(uploadError.message || 'Supabase upload failed.')
+
+          upload.start()
+        })
 
         filePath = tokenData.pathname || ''
         fileName = file.name
