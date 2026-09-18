@@ -220,3 +220,56 @@ function AdminPanel({ projects, setProjects, adminKey, setAdminKey, message, set
 }
 
 createRoot(document.getElementById('root')).render(<App />)
+
+      
+      const project = {
+        id: `${Date.now()}-${form.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`,
+        ...form,
+        filePath,
+        fileName,
+        fileContentType,
+        fileSize,
+      }
+
+      const response = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-key': key },
+        body: JSON.stringify({ project }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data.error || 'Could not save project')
+
+      const savedProject = data.project || project
+      setProjects([savedProject, ...projects.filter((item) => item.id !== savedProject.id)])
+      setForm({ name: '', type: 'Live', description: '', version: '', url: '', github: '', featured: false })
+      setFile(null)
+      if (fileRef.current) fileRef.current.value = ''
+      setMessage('Project added successfully.')
+    } catch (error) {
+      setMessage(error.message || 'Something went wrong.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function removeProject(id) {
+    const key = adminKey.trim()
+    if (!key) return setMessage('Enter your admin key first.')
+    setBusy(true); setMessage('Removing project…')
+    try {
+      const response = await fetch(`/api/projects?id=${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'x-admin-key': key } })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data.error || `Remove failed (${response.status})`)
+      setProjects(data.projects || projects.filter((project) => project.id !== id))
+      setMessage('Project removed successfully.')
+    } catch (error) {
+      setMessage(error.message || 'Could not remove project.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="admin-panel"><div className="admin-head"><div><p className="section-kicker">Private controls</p><h2>Manage projects</h2></div><button className="icon-button" onClick={onClose}><X size={18} /></button></div><p className="admin-note">Your admin key is sent only to the Vercel API to authorize uploads and project changes. Files are stored in Supabase Storage.</p><label className="field"><span>Admin key</span><input type="password" value={adminKey} onChange={(e) => setAdminKey(e.target.value)} placeholder="Vercel ADMIN_UPLOAD_KEY" /></label><form onSubmit={saveProject} className="admin-form"><div className="form-row"><label className="field"><span>Project name</span><input value={form.name} onChange={(e) => update('name', e.target.value)} placeholder="My Project" /></label><label className="field"><span>Type</span><select value={form.type} onChange={(e) => { update('type', e.target.value); setFile(null); if (fileRef.current) fileRef.current.value = '' }}><option>Live</option><option>APK</option><option>EXE</option><option>Extension</option><option>File</option></select></label></div><label className="field"><span>Short description</span><textarea value={form.description} onChange={(e) => update('description', e.target.value)} placeholder="What does this project do?" rows="3" /></label><div className="form-row"><label className="field"><span>Version / platform</span><input value={form.version} onChange={(e) => update('version', e.target.value)} placeholder="Web app / Android / Windows / Chrome" /></label><label className="field"><span>GitHub URL <em>optional</em></span><input value={form.github} onChange={(e) => update('github', e.target.value)} placeholder="https://github.com/..." /></label></div>{form.type === 'Live' ? <label className="field"><span>Deployed URL</span><input value={form.url} onChange={(e) => update('url', e.target.value)} placeholder="https://my-project.vercel.app" /></label> : <label className="upload-box" htmlFor="project-file-upload"><UploadCloud size={30} /><strong>{file ? file.name : `Upload ${fileDescription(form.type)}`}</strong><span>{file ? `${(file.size / 1024 / 1024).toFixed(1)} MB selected` : form.type === 'APK' ? 'Choose an .apk file' : form.type === 'EXE' ? 'Choose an .exe file' : form.type === 'Extension' ? 'ZIP, CRX or XPI file' : 'Any file type is allowed'}</span><input id="project-file-upload" ref={fileRef} type="file" accept={fileAccept(form.type)} onChange={(e) => setFile(e.target.files?.[0] || null)} /></label>}<label className="check-row"><input type="checkbox" checked={form.featured} onChange={(e) => update('featured', e.target.checked)} /><span>Mark as featured</span></label><button className="save-button" disabled={busy}>{busy ? 'Working…' : <><Check size={16} /> Add project</>}</button></form>{message && <div className="admin-message">{message}</div>}<div className="admin-list"><p className="section-kicker">Current projects</p>{projects.map((project) => <div className="admin-project" key={project.id}><div><strong>{project.name}</strong><span>{typeLabel(project.type)}</span></div><button disabled={busy} onClick={() => removeProject(project.id)} title={`Delete ${project.name}`}><Trash2 size={15} /></button></div>)}</div></aside></div>
+}
+
+createRoot(document.getElementById('root')).render(<App />)
