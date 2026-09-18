@@ -158,7 +158,8 @@ function AdminPanel({ projects, setProjects, adminKey, setAdminKey, message, set
           xhr.onabort = () => reject(new Error('Upload was cancelled.'))
           xhr.send(file)
         })
-e || ''
+
+        filePath = tokenData.pathname
         fileName = file.name
         fileContentType = uploadContentType
         fileSize = file.size
