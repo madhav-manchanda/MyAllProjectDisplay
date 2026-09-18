@@ -120,16 +120,18 @@ function AdminPanel({ projects, setProjects, adminKey, setAdminKey, message, set
         const tokenData = await tokenResponse.json().catch(() => ({}))
         if (!tokenResponse.ok) throw new Error(tokenData.error || `Could not prepare upload (${tokenResponse.status})`)
 
-        if (!tokenData.signedUrl || !tokenData.token || !tokenData.pathname) {
+        if (!tokenData.signedUrl || !tokenData.pathname) {
           throw new Error('Supabase did not return a usable signed upload URL.')
         }
 
         setMessage(`Uploading ${fileDescription(form.type)}… 0%`)
         await new Promise((resolve, reject) => {
           const xhr = new XMLHttpRequest()
+          const uploadBody = new FormData()
+          uploadBody.append('cacheControl', '3600')
+          uploadBody.append('', file)
+
           xhr.open('PUT', tokenData.signedUrl, true)
-          xhr.setRequestHeader('Content-Type', uploadContentType)
-          xhr.setRequestHeader('Cache-Control', 'max-age=3600')
 
           xhr.upload.onprogress = (event) => {
             if (!event.lengthComputable) return
@@ -156,7 +158,7 @@ function AdminPanel({ projects, setProjects, adminKey, setAdminKey, message, set
 
           xhr.onerror = () => reject(new Error('Network error while uploading the file to Supabase Storage.'))
           xhr.onabort = () => reject(new Error('Upload was cancelled.'))
-          xhr.send(file)
+          xhr.send(uploadBody)
         })
 
         filePath = tokenData.pathname
